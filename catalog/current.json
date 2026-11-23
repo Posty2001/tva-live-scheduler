@@ -1,0 +1,23 @@
+{
+ "content_hash": "e7caa4a1ab117d94",
+ "files": {
+  "calendar": {
+   "bytes": 5857,
+   "path": "c/072fc8088203cc5f/calendar.json",
+   "sha256": "1f4128f7a18ff03bb9a8b92eb795a82fd969d7606412569d6a94850ceb9e2f72"
+  },
+  "manifest": {
+   "bytes": 1552,
+   "path": "c/072fc8088203cc5f/manifest.json",
+   "sha256": "38d927c9fe64e90d7979563d392a1e2d0e5107da709f25f4b8e9885a82deec08"
+  },
+  "trailers": {
+   "bytes": 842,
+   "path": "c/072fc8088203cc5f/trailers.json",
+   "sha256": "2717577bdbfe4f03755a6e2e393b81a3c186a63934f4c5058a6ac03867b4bc3a"
+  }
+ },
+ "generated_at": "2026-11-23T19:52:31+00:00",
+ "schema": 1,
+ "version": "072fc8088203cc5f"
+}
