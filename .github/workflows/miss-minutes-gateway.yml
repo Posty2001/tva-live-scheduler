@@ -1,0 +1,148 @@
+# Miss Minutes - deploy del gateway su Cloudflare (Worker esistente miss-minutes-api). SOLO avvio manuale.
+# Nessun segreto nei file: CLOUDFLARE_API_TOKEN e CLOUDFLARE_ACCOUNT_ID (e, solo per attivare l AI, GEMINI_KEY) stanno nei GitHub Secrets;
+# SESSION_SECRET viene generato qui e salvato direttamente come secret Cloudflare (mai mostrato, mai nei log).
+# Non tocca marvel-timeline, ne main di alcun progetto dell app. Nessun servizio a pagamento: piano Cloudflare Free, Durable Object SQLite.
+name: Miss Minutes - gateway
+run-name: Miss Minutes gateway (${{ inputs.action }}${{ inputs.enable_gemini && ', AI attiva' || '' }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "check = solo controlli e build (nessun contatto con Cloudflare). deploy = pubblica il Worker"
+        type: choice
+        options: [check, deploy]
+        default: check
+      enable_gemini:
+        description: "Attiva l AI (Gemini). Lascia SPENTO finche non hai verificato il piano gratuito"
+        type: boolean
+        default: false
+      free_tier_checked:
+        description: "Confermo: in Google AI Studio la chiave e di un progetto SENZA fatturazione e il modello ha un limite gratuito > 0"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: miss-minutes-gateway
+  cancel-in-progress: false
+
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: miss-minutes-gateway
+    env:
+      ACTION: ${{ inputs.action }}
+      ENABLE_GEMINI: ${{ inputs.enable_gemini }}
+      FREE_TIER_CHECKED: ${{ inputs.free_tier_checked }}
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Controlli di configurazione (nessuna rete)
+        run: |
+          set -eu
+          grep -q '^name = "miss-minutes-api"$' wrangler.toml
+          grep -q '^new_sqlite_classes = \["Limiter"\]$' wrangler.toml
+          grep -q 'class_name = "Limiter"' wrangler.toml && grep -q 'name = "LIMITER"' wrangler.toml
+          grep -q '^APP_ORIGINS = "https://tva-archives-test-1110.netlify.app"$' wrangler.toml
+          grep -q '^FREE_TIER_VERIFIED = "no"$' wrangler.toml
+          if grep -Eiq 'GEMINI_KEY *=|SESSION_SECRET *=|API_TOKEN' wrangler.toml; then echo "::error::segreto nel file di configurazione"; exit 1; fi
+          if [ "$ENABLE_GEMINI" = "true" ] && [ "$FREE_TIER_CHECKED" != "true" ]; then
+            echo "::error::Per attivare l AI devi spuntare anche la conferma del piano gratuito."; exit 1
+          fi
+          echo "Configurazione coerente: Worker miss-minutes-api, migrazione SQLite Limiter, binding LIMITER, origine unica Netlify TEST."
+
+      - name: Build del Worker (dry-run, senza credenziali)
+        run: npx --yes wrangler@4 deploy --dry-run --outdir /tmp/wrangler-out
+
+      - name: Verifica credenziali Cloudflare
+        if: inputs.action == 'deploy'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -eu
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Mancano i GitHub Secrets CLOUDFLARE_API_TOKEN e/o CLOUDFLARE_ACCOUNT_ID (Settings > Secrets and variables > Actions)."; exit 1
+          fi
+          curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" https://api.cloudflare.com/client/v4/user/tokens/verify | grep -q '"status":"active"' \
+            || { echo "::error::Token Cloudflare non valido o non attivo."; exit 1; }
+          echo "Token Cloudflare attivo."
+
+      - name: Deploy del Worker (migrazione SQLite + binding LIMITER)
+        id: deploy
+        if: inputs.action == 'deploy'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -eu
+          ARGS=""
+          if [ "$ENABLE_GEMINI" = "true" ]; then ARGS="--var FREE_TIER_VERIFIED:yes"; fi
+          npx --yes wrangler@4 deploy $ARGS 2>&1 | tee /tmp/deploy.out
+          URL=$(grep -oE 'https://miss-minutes-api\.[a-z0-9-]+\.workers\.dev' /tmp/deploy.out | head -1 || true)
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Segreti Cloudflare (SESSION_SECRET se manca; GEMINI_KEY solo se AI attiva)
+        if: inputs.action == 'deploy'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GEMINI_KEY_IN: ${{ secrets.GEMINI_KEY }}
+        run: |
+          set -eu
+          LIST=$(npx --yes wrangler@4 secret list --format json)
+          if echo "$LIST" | grep -q '"SESSION_SECRET"'; then
+            echo "SESSION_SECRET gia presente su Cloudflare: invariato (le sessioni attive restano valide)."
+          else
+            openssl rand -base64 48 | tr -d '\n=+/' | head -c 48 | npx --yes wrangler@4 secret put SESSION_SECRET >/dev/null
+            echo "SESSION_SECRET generato e salvato su Cloudflare (non visibile a nessuno)."
+          fi
+          if [ "$ENABLE_GEMINI" = "true" ]; then
+            if [ -z "$GEMINI_KEY_IN" ]; then echo "::error::Manca il GitHub Secret GEMINI_KEY."; exit 1; fi
+            printf '%s' "$GEMINI_KEY_IN" | npx --yes wrangler@4 secret put GEMINI_KEY >/dev/null
+            echo "GEMINI_KEY salvata su Cloudflare."
+          else
+            echo "AI spenta: GEMINI_KEY non viene caricata su Cloudflare."
+          fi
+
+      - name: Verifica dal vivo (health, CORS)
+        if: inputs.action == 'deploy' && steps.deploy.outputs.url != ''
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set -eu
+          O="https://tva-archives-test-1110.netlify.app"
+          for i in 1 2 3 4 5 6; do
+            R=$(curl -sS -H "Origin: $O" "$URL/v1/health" || true); echo "$R" | grep -q '"ok":true' && break; sleep 5
+          done
+          echo "health: $R"
+          echo "$R" | grep -q '"ok":true' || { echo "::error::Il gateway non risponde come atteso."; exit 1; }
+          if [ "$ENABLE_GEMINI" = "true" ]; then echo "$R" | grep -q '"enabled":true' || { echo "::error::AI richiesta ma il gateway risulta disabilitato."; exit 1; }
+          else echo "$R" | grep -q '"enabled":false' || { echo "::error::AI doveva essere spenta."; exit 1; }; fi
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Origin: https://evil.example" "$URL/v1/health")
+          [ "$CODE" = "403" ] || { echo "::error::Origine estranea non rifiutata ($CODE)."; exit 1; }
+          echo "Origine estranea rifiutata (403)."
+
+      - name: Riepilogo
+        if: always()
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          {
+            echo "## Miss Minutes - gateway"
+            echo "- Azione: \`$ACTION\` · AI: \`$ENABLE_GEMINI\`"
+            if [ -n "${URL:-}" ]; then echo "- **Indirizzo del gateway (da incollare in Miss Minutes > Impostazioni):** \`$URL\`"; fi
+            echo "- Nessun segreto stampato nei log."
+          } >> "$GITHUB_STEP_SUMMARY"
