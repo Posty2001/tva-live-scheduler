@@ -1,5 +1,4 @@
-# Gateway Miss Minutes. Worker ESISTENTE: miss-minutes-api (viene aggiornato, non ricreato).
-# Copia del sorgente mantenuto in marvel-timeline/miss-minutes/gateway/. Nessun segreto in questo file.
+# Gateway Miss Minutes — nome identico al Worker già creato su Cloudflare.
 name = "miss-minutes-api"
 main = "worker.ts"
 compatibility_date = "2025-08-01"
@@ -12,11 +11,11 @@ FREE_TIER_VERIFIED = "no"
 # Origini esatte dell'app (https, senza slash finale), separate da virgola.
 APP_ORIGINS = "https://tva-archives-test-1110.netlify.app"
 GEMINI_MODEL = "gemini-3.5-flash-lite"
-DAILY_CAP = "18"
-MONTHLY_CAP = "500"
-IP_DAILY_CAP = "10"
-DEVICE_DAILY_CAP = "10"
-GLOBAL_RPM_CAP = "8"
+DAILY_CAP = "450"
+MONTHLY_CAP = "12000"
+IP_DAILY_CAP = "100"
+DEVICE_DAILY_CAP = "100"
+GLOBAL_RPM_CAP = "12"
 POW_BITS = "16"
 
 [[durable_objects.bindings]]
