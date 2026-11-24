@@ -95,6 +95,7 @@ jobs:
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: Segreti Cloudflare (SESSION_SECRET se manca; GEMINI_KEY solo se AI attiva)
+        id: secrets
         if: inputs.action == 'deploy'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -108,29 +109,55 @@ jobs:
           else
             openssl rand -base64 48 | tr -d '\n=+/' | head -c 48 | npx --yes wrangler@4 secret put SESSION_SECRET >/dev/null
             echo "SESSION_SECRET generato e salvato su Cloudflare (non visibile a nessuno)."
+            echo "changed=1" >> "$GITHUB_OUTPUT"
           fi
           if [ "$ENABLE_GEMINI" = "true" ]; then
             if [ -z "$GEMINI_KEY_IN" ]; then echo "::error::Manca il GitHub Secret GEMINI_KEY."; exit 1; fi
             printf '%s' "$GEMINI_KEY_IN" | npx --yes wrangler@4 secret put GEMINI_KEY >/dev/null
             echo "GEMINI_KEY salvata su Cloudflare."
+            echo "changed=1" >> "$GITHUB_OUTPUT"
           else
             echo "AI spenta: GEMINI_KEY non viene caricata su Cloudflare."
           fi
 
-      - name: Verifica dal vivo (health, CORS)
+      - name: Deploy finale (stato definitivo, variabili e segreti nella stessa versione)
+        if: inputs.action == 'deploy' && steps.secrets.outputs.changed == '1'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -eu
+          ARGS=""
+          if [ "$ENABLE_GEMINI" = "true" ]; then ARGS="--var FREE_TIER_VERIFIED:yes"; fi
+          npx --yes wrangler@4 deploy $ARGS 2>&1 | tail -5
+
+      - name: Verifica di persistenza (nomi e tipi, mai valori)
+        if: inputs.action == 'deploy'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -eu
+          J=$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/miss-minutes-api/settings")
+          echo "$J" | python3 check_persistence.py
+
+      - name: Verifica dal vivo (health, CORS, attesa propagazione)
         if: inputs.action == 'deploy' && steps.deploy.outputs.url != ''
         env:
           URL: ${{ steps.deploy.outputs.url }}
         run: |
           set -eu
           O="https://tva-archives-test-1110.netlify.app"
-          for i in 1 2 3 4 5 6; do
-            R=$(curl -sS -H "Origin: $O" "$URL/v1/health" || true); echo "$R" | grep -q '"ok":true' && break; sleep 5
+          if [ "$ENABLE_GEMINI" = "true" ]; then WANT='"enabled":true'; else WANT='"enabled":false'; fi
+          R=""
+          for i in $(seq 1 12); do
+            R=$(curl -sS -H "Origin: $O" "$URL/v1/health" || true)
+            echo "tentativo $i: $R"
+            echo "$R" | grep -q "$WANT" && break
+            sleep 10
           done
-          echo "health: $R"
           echo "$R" | grep -q '"ok":true' || { echo "::error::Il gateway non risponde come atteso."; exit 1; }
-          if [ "$ENABLE_GEMINI" = "true" ]; then echo "$R" | grep -q '"enabled":true' || { echo "::error::AI richiesta ma il gateway risulta disabilitato."; exit 1; }
-          else echo "$R" | grep -q '"enabled":false' || { echo "::error::AI doveva essere spenta."; exit 1; }; fi
+          echo "$R" | grep -q "$WANT" || { echo "::error::Stato AI diverso dal richiesto dopo 2 minuti. Prerequisiti mancanti (solo nomi): $R"; exit 1; }
           CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Origin: https://evil.example" "$URL/v1/health")
           [ "$CODE" = "403" ] || { echo "::error::Origine estranea non rifiutata ($CODE)."; exit 1; }
           echo "Origine estranea rifiutata (403)."
