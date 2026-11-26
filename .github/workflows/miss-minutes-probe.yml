@@ -1,0 +1,20 @@
+# Sonda di streaming del gateway Miss Minutes: SOLO avvio manuale. Una sessione e UNA richiesta chat (quota gratuita); stampa solo tempi/dimensioni dei chunk.
+# Non modifica Cloudflare, non usa segreti, non tocca TVA Live.
+name: Miss Minutes - sonda streaming
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: node miss-minutes-gateway/probe/stream_probe.mjs
+        env:
+          EP: https://miss-minutes-api.franco-posteraro.workers.dev
+          ORIGIN: https://tva-archives-test-1110.netlify.app
