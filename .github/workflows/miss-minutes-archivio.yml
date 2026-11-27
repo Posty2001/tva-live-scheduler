@@ -1,0 +1,138 @@
+# Miss Minutes - aggiornamento dell archivio TMDB. Canale DATI indipendente da TVA Live.
+# - NON usa GitHub Pages, NON fa deploy, NON tocca catalog/, il sito, ne il workflow "TVA Live - scheduler".
+# - Pubblica SOLO sul branch dedicato `mm-archivio` (servito da raw.githubusercontent.com): un file immutabile per versione + pointer.json con SHA-256.
+# - Se la generazione o la validazione falliscono NON scrive nulla: resta l ultima versione valida.
+# - Nessun deploy Netlify: l app legge pointer.json e scarica il file solo se piu recente (miss-minutes/archive.js).
+name: Miss Minutes - archivio TMDB
+run-name: Miss Minutes archivio (${{ github.event_name }})
+
+on:
+  schedule:
+    - cron: '41 3 * * 1'            # ogni lunedi (UTC), minuto non tondo
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Prova a secco - genera e valida ma non pubblica nulla
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: mm-archivio                # gruppo proprio: non condivide la coda con tva-live-scheduler
+  cancel-in-progress: false
+
+env:
+  TARGET_REPO: Posty2001/marvel-timeline
+  TARGET_REF: test/tva-archives     # unico branch ammesso
+  TARGET_WORKFLOW: tmdb-sync.yml
+  DATA_BRANCH: mm-archivio
+
+jobs:
+  genera:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions: {}
+    steps:
+      - name: Avvia la generazione, attendi l esito e scarica l archivio
+        env:
+          GH_TOKEN: ${{ secrets.TVA_DISPATCH_TOKEN }}
+        run: |
+          set -uo pipefail
+          fail() { echo "::error::$1"; { echo "## Miss Minutes - archivio"; echo; echo "**ERRORE (nulla pubblicato, resta l ultima versione valida):** $1"; } >> "$GITHUB_STEP_SUMMARY"; exit 1; }
+          [ -n "${GH_TOKEN:-}" ] || fail "Secret TVA_DISPATCH_TOKEN mancante."
+          main_before="$(gh api "repos/$TARGET_REPO/commits/main" --jq .sha)" || fail "Token non valido o repository non raggiungibile."
+          did="mm-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; title="Miss Minutes archivio $did"
+          gh workflow run "$TARGET_WORKFLOW" -R "$TARGET_REPO" --ref "$TARGET_REF" -f mm_tmdb=true -f mm_tmdb_commit=false -f dispatch_id="$did" \
+            || fail "Avvio del workflow di generazione rifiutato (permesso Actions: Read and write?)."
+          id=""
+          for i in $(seq 1 18); do
+            sleep 10
+            id="$(gh run list -R "$TARGET_REPO" -w "$TARGET_WORKFLOW" --branch "$TARGET_REF" --event workflow_dispatch --limit 20 \
+                  --json databaseId,displayTitle --jq "[.[] | select(.displayTitle == \"$title\")][0].databaseId // empty" 2>/dev/null)"
+            [ -n "$id" ] && break
+          done
+          [ -n "$id" ] || fail "Run di generazione non trovato entro 3 minuti (il workflow su $TARGET_REF contiene la modifica del run-name?)."
+          echo "Run: https://github.com/$TARGET_REPO/actions/runs/$id"
+          status=""; conclusion=""
+          for i in $(seq 1 60); do
+            read -r status conclusion < <(gh run view "$id" -R "$TARGET_REPO" --json status,conclusion --jq '[.status, (.conclusion // "-")] | @tsv' 2>/dev/null || echo "unknown -")
+            [ "$status" = "completed" ] && break
+            sleep 15
+          done
+          [ "$status" = "completed" ] || fail "La generazione non e terminata entro 15 minuti (stato: $status)."
+          # L artifact viene caricato anche se il run fallisce (e conterrebbe il file vecchio del repository): si accetta SOLO un run riuscito.
+          [ "$conclusion" = "success" ] || fail "La generazione e terminata con '$conclusion'."
+          mkdir -p in && gh run download "$id" -R "$TARGET_REPO" -n mm-tmdb -D in >/dev/null 2>&1 || fail "Artifact mm-tmdb non scaricabile."
+          f="$(find in -name tmdb_titoli.json | head -1)"; [ -s "$f" ] || fail "tmdb_titoli.json assente nell artifact."
+          [ "$(gh api "repos/$TARGET_REPO/commits/main" --jq .sha)" = "$main_before" ] || fail "main di marvel-timeline e cambiato durante l esecuzione: verificare."
+          mkdir -p out && cp "$f" out/tmdb_titoli.json
+          echo "Generato: $(wc -c < out/tmdb_titoli.json) byte"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mm-archivio-candidato
+          path: out/tmdb_titoli.json
+          retention-days: 14
+          if-no-files-found: error
+
+  pubblica:
+    needs: genera
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write               # solo per scrivere il branch mm-archivio di QUESTO repository
+    steps:
+      - uses: actions/checkout@v4   # main: scripts/mm_archivio.py
+        with:
+          path: tool
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: mm-archivio-candidato
+          path: cand
+      - name: Prepara il branch dati (esistente oppure orfano)
+        run: |
+          set -euo pipefail
+          url="https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          mkdir data && cd data && git init -q && git remote add origin "$url"
+          git config user.name "mm-archivio-bot"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin "$DATA_BRANCH" >/dev/null 2>&1; then git fetch -q origin "$DATA_BRANCH" && git checkout -q -B "$DATA_BRANCH" FETCH_HEAD; else git checkout -q --orphan "$DATA_BRANCH"; echo "Branch dati nuovo (orfano)."; fi
+      - name: Valida, confronta con l ultima versione valida, calcola SHA-256
+        id: val
+        run: |
+          set +e
+          python3 tool/scripts/mm_archivio.py --src cand/tmdb_titoli.json --dir data --result RESULT.json ${{ inputs.dry_run == true && '--dry-run' || '' }}
+          rc=$?
+          esito="$(jq -r .esito RESULT.json 2>/dev/null || echo errore)"
+          echo "esito=$esito" >> "$GITHUB_OUTPUT"
+          { echo "## Miss Minutes - archivio"; echo; echo "**Esito: $esito**"; echo; echo '```json'; cat RESULT.json 2>/dev/null; echo; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$esito" = "rifiutato" ]; then echo "::error::Archivio candidato RIFIUTATO dai controlli: nulla pubblicato, resta l ultima versione valida."; exit 1; fi
+          [ $rc -eq 0 ] || exit 1
+      - name: Pubblica sul branch dati
+        if: ${{ steps.val.outputs.esito == 'aggiornato' }}
+        run: |
+          set -euo pipefail
+          cd data
+          cat > README.md <<'EOF'
+          Canale dati dell'archivio TMDB di Miss Minutes (generato automaticamente da .github/workflows/miss-minutes-archivio.yml). Non modificare a mano.
+          pointer.json = versione corrente (con SHA-256); tmdb_titoli.<sha8>.json = file immutabili; storico.json = ultime versioni.
+          EOF
+          git add -A
+          git commit -q -m "archivio TMDB $(jq -r .generato ../RESULT.json) ($(jq -r .sha256 ../RESULT.json | cut -c1-8))"
+          for i in 1 2 3; do git push -q origin "HEAD:refs/heads/$DATA_BRANCH" && break || { sleep 5; git fetch -q origin "$DATA_BRANCH" && git rebase -q FETCH_HEAD || true; }; done
+          git ls-remote --exit-code --heads origin "$DATA_BRANCH" >/dev/null
+      - name: Verifica l endpoint pubblico reale (HTTPS, CORS, SHA-256)
+        if: ${{ steps.val.outputs.esito == 'aggiornato' }}
+        run: |
+          set -uo pipefail
+          base="https://raw.githubusercontent.com/${{ github.repository }}/$DATA_BRANCH"
+          want="$(jq -r .sha256 RESULT.json)"; file="$(jq -r .file RESULT.json)"
+          for i in $(seq 1 14); do
+            p="$(curl -fsS -D h.txt "$base/pointer.json?t=$(date +%s)" 2>/dev/null)" && [ "$(echo "$p" | jq -r .sha256)" = "$want" ] && break
+            sleep 30
+          done
+          [ "$(echo "${p:-}" | jq -r .sha256 2>/dev/null)" = "$want" ] || { echo "::error::pointer.json pubblico non aggiornato (cache di raw.githubusercontent?)."; exit 1; }
+          grep -qi '^access-control-allow-origin: \*' h.txt || { echo "::error::Manca l intestazione CORS."; exit 1; }
+          curl -fsS "$base/$file?t=$(date +%s)" -o v.json
+          [ "$(sha256sum v.json | cut -d' ' -f1)" = "$want" ] || { echo "::error::SHA-256 del file pubblico diverso dal puntatore."; exit 1; }
+          echo "Endpoint verificato: $base/pointer.json (sha256 $want)" | tee -a "$GITHUB_STEP_SUMMARY"
