@@ -1,0 +1,18 @@
+{
+ "generated_at": "2026-11-28T14:18:00+00:00",
+ "items": [
+  {
+   "category": "film",
+   "categoryBasis": "titolo collegato",
+   "channel": "Marvel Entertainment",
+   "key": "yt:hGaXQ8L_Z28",
+   "kind": "trailer",
+   "official": true,
+   "published": "2026-11-23",
+   "relatesTo": "tmdb:movie:1003596",
+   "title": "Avengers: Doomsday | Final Trailer | In UK Cinemas December 16",
+   "url": "https://www.youtube.com/watch?v=hGaXQ8L_Z28"
+  }
+ ],
+ "schema": 1
+}

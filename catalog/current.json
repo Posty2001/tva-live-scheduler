@@ -1,23 +1,23 @@
 {
- "content_hash": "fd7321b02599da44",
+ "content_hash": "9f2a4024e8d9ba47",
  "files": {
   "calendar": {
-   "bytes": 6845,
-   "path": "c/3136426bbcc84d14/calendar.json",
-   "sha256": "42ce85ee8b7d36eeaf269bf2b34ce96cbcb49584a8ef3aec6a04755a5854cec4"
+   "bytes": 6591,
+   "path": "c/78b058a897a430b8/calendar.json",
+   "sha256": "0e72c3628d2b69deb6153726ef5338879628e8fd85f59d509b0227de66460965"
   },
   "manifest": {
    "bytes": 1552,
-   "path": "c/3136426bbcc84d14/manifest.json",
-   "sha256": "7836d63cd903a804006f5fc121cdbcc34a4b0de640cf562f2e028b71a7b2f4b5"
+   "path": "c/78b058a897a430b8/manifest.json",
+   "sha256": "01b5124187f02e0374db2ee70ac258e288671b944ca0631a8b64be65e6db7bc0"
   },
   "trailers": {
-   "bytes": 842,
-   "path": "c/3136426bbcc84d14/trailers.json",
-   "sha256": "ef8f675ecfc4d3440fea032d94dba700f619ca6bda18f2de9a73c481b58d2f9c"
+   "bytes": 461,
+   "path": "c/78b058a897a430b8/trailers.json",
+   "sha256": "65ba60c9e486dd069e44a231a4ad180f23a8b898d0d7ab5d4cff0b864dc6cb00"
   }
  },
- "generated_at": "2026-11-24T10:54:43+00:00",
+ "generated_at": "2026-11-28T14:18:00+00:00",
  "schema": 1,
- "version": "3136426bbcc84d14"
+ "version": "78b058a897a430b8"
 }
